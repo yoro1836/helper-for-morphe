@@ -10,3 +10,4 @@ local.properties
 reports/
 __pycache__/
 *.pyc
+!.github/debug.keystore

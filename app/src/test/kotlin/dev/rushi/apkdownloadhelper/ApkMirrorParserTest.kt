@@ -443,4 +443,32 @@ class ApkMirrorParserTest {
         assertEquals("2.0.0", candidates.first().versionName)
         assertTrue(fetcher.requestedUrls().none { it.contains("/uploads/") })
     }
+
+    @Test
+    fun versionCodesFor_readsCodesFromReleasePageDeviceAbiFirst() {
+        val releaseUrl = "${appPageUrl}example-app-2-0-0-release/"
+        fun row(code: Long, arch: String) =
+            """<div class="table-row headerFont">
+                 <div class="table-cell"><a href="${releaseUrl}v-$code/">2.0.0</a><br><span class="colorLightBlack">$code</span></div>
+                 <div class="table-cell">$arch</div>
+                 <div class="table-cell">Android 8.0+</div>
+                 <div class="table-cell">nodpi</div>
+               </div>"""
+        val fetcher = FakeSourceTextFetcher(
+            apkMirrorPages(
+                mapOf(
+                    releaseUrl to """<html><body>
+                        <div class="table-row headerFont"><div class="table-cell">Variant</div><div class="table-cell">Arch</div></div>
+                        ${row(200, "x86_64")}
+                        ${row(100, "arm64-v8a")}
+                      </body></html>"""
+                )
+            )
+        )
+        val parser = ApkMirrorParser(parserContext(fetcher))
+
+        val codes = parser.versionCodesFor(testRequest(packageName = packageName), "2.0.0")
+
+        assertEquals(listOf(100L, 200L), codes)
+    }
 }

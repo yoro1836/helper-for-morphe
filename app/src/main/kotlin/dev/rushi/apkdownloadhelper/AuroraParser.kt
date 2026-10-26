@@ -14,9 +14,12 @@ import dev.rushi.apkdownloadhelper.play.PlayHttpClient
  * Google Play downloads through Aurora's anonymous accounts. Play's purchase
  * call accepts any version code it still hosts, so older builds can be fetched
  * when their version code is known: from the request itself, from Aptoide's
- * version list (name -> code), or typed by the user.
+ * version list or APKMirror's release page (name -> code), or typed by the user.
  */
-internal class AuroraParser(private val ctx: SourceParserContext) : ApkSourceParser {
+internal class AuroraParser(
+    private val ctx: SourceParserContext,
+    private val apkMirror: ApkMirrorParser? = null
+) : ApkSourceParser {
     override val source: DownloadSource = DownloadSource.AURORA
 
     private val playHttpClient: PlayHttpClient
@@ -108,9 +111,18 @@ internal class AuroraParser(private val ctx: SourceParserContext) : ApkSourcePar
         if (names.any { app.versionName.versionNameEquals(it) }) {
             return listOf(PlayVersion(app.versionName, app.versionCode))
         }
-        return knownVersions(request)
+        knownVersions(request)
             .filter { version -> names.any { version.versionName.versionNameEquals(it) } }
             .sortedByDescending(PlayVersion::versionCode)
+            .takeIf(List<PlayVersion>::isNotEmpty)
+            ?.let { return it }
+        val mirror = apkMirror ?: return emptyList()
+        return names.flatMap { name ->
+            runCatching { mirror.versionCodesFor(request, name) }
+                .onFailure { Log.w(TAG, "APKMirror version code lookup failed for ${request.packageName} $name", it) }
+                .getOrDefault(emptyList())
+                .map { PlayVersion(name, it) }
+        }
     }
 
     /** Version name -> code pairs from Aptoide's version list (one JSON call). */

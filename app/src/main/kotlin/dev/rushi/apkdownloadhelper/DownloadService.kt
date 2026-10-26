@@ -32,11 +32,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -51,6 +56,7 @@ private const val CHANNEL_PROGRESS = "download_progress"
 private const val CHANNEL_DONE = "download_done"
 private const val NOTIFICATION_ID_PROGRESS = 1001
 internal const val NOTIFICATION_ID_DONE = 1002
+private const val SPLIT_DOWNLOAD_CONCURRENCY = 3
 internal const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
 private const val PREFS_PENDING = "pending_download_result"
 
@@ -251,14 +257,14 @@ internal class DownloadService : Service() {
     private var currentSpeedBytesPerSec = 0.0
     private var speedSamples = 0
 
-    private val browserUserAgent =
-        "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36"
+    // Lazy: the context isn't attached yet while fields initialise.
+    private val browserUserAgent by lazy { webViewUserAgent() }
 
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
         .dns(AdGuardDns)
+        .cookieJar(WebViewCookieJar)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
@@ -814,17 +820,30 @@ internal class DownloadService : Service() {
                 .sanitizeFileName()
         )
         val knownTotal = files.mapNotNull { it.size }.sum().takeIf { it > 0L }
-        var completed = 0L
-        val staged = files.mapIndexed { index, file ->
-            val stagedFile = File(
-                downloadsDir,
-                "${candidate.packageName}-${candidate.source.name}-split_$index.part".sanitizeFileName()
-            )
-            downloader.downloadToFile(file, stagedFile) { fileCopied, total ->
-                knownTotal?.let { updateDownloadProgress(candidate, completed + fileCopied, it) }
-            }
-            completed += stagedFile.length()
-            stagedFile to file.fileName.ifBlank { "split_$index.apk" }.sanitizeFileName()
+        // Splits download concurrently; progress is the sum of every file's bytes.
+        val copiedByFile = LongArray(files.size)
+        val progressLock = Any()
+        val gate = Semaphore(SPLIT_DOWNLOAD_CONCURRENCY)
+        val staged = coroutineScope {
+            files.mapIndexed { index, file ->
+                async {
+                    gate.withPermit {
+                        val stagedFile = File(
+                            downloadsDir,
+                            "${candidate.packageName}-${candidate.source.name}-split_$index.part".sanitizeFileName()
+                        )
+                        downloader.downloadToFile(file, stagedFile) { fileCopied, _ ->
+                            knownTotal?.let { total ->
+                                synchronized(progressLock) {
+                                    copiedByFile[index] = fileCopied
+                                    updateDownloadProgress(candidate, copiedByFile.sum(), total)
+                                }
+                            }
+                        }
+                        stagedFile to file.fileName.ifBlank { "split_$index.apk" }.sanitizeFileName()
+                    }
+                }
+            }.awaitAll()
         }
 
         ZipOutputStream(outputFile.outputStream()).use { zip ->

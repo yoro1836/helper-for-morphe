@@ -23,7 +23,7 @@ This project is independent from the APK source websites listed below. Source av
 - Every source can be individually **enabled/disabled** from Settings → Sources; disabled sources disappear from the picker, manual links, Fast Mode, and the default-source dropdown. If you disable *everything*, Play Store remains as the fallback.
 - A **default source** can be set so the picker opens on your preferred provider instead of the first one.
 - Each source offers up to four flows: **Manual** (open the site), **Recommended** (exact requested version), **Latest** (newest compatible), and **History** (browse every version).
-- **Aurora** downloads straight from Google Play and can fetch older builds too: Recommended resolves the requested version's code (from the request or Aptoide's version list), and History lists known builds plus a box to enter any version code Play still serves.
+- **Aurora** downloads straight from Google Play and can fetch older builds too: Recommended resolves the requested version's code (from the request, Aptoide's version list, or APKMirror's release page, which isn't behind Cloudflare), and History lists known builds plus a box to enter any version code Play still serves.
 - The source picker is a compact **dropdown** with a live enabled-source count; selecting a source collapses it so the page stays clean.
 - Sources that gate files behind Cloudflare-style challenges open an **in-app captcha browser** (a real WebView); the download it produces is captured back into the helper. VirusTotal scans are offered in this flow too.
 
