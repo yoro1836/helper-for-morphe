@@ -344,8 +344,9 @@ class MainActivity : ComponentActivity() {
             playHttpClient = playHttpClient,
             appContext = this
         )
+        val apkMirrorParser = ApkMirrorParser(parserContext)
         listOf(
-            ApkMirrorParser(parserContext),
+            apkMirrorParser,
             UptodownParser(parserContext),
             ApkPureParser(parserContext),
             ApkComboParser(parserContext),
@@ -353,7 +354,7 @@ class MainActivity : ComponentActivity() {
             EvoziParser(parserContext),
             Mi9Parser(),
             ApkDownloaderPagesParser(),
-            AuroraParser(parserContext)
+            AuroraParser(parserContext, apkMirror = apkMirrorParser)
         ).associateBy { it.source }
     }
 

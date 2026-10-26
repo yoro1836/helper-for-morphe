@@ -402,12 +402,43 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
             }
     }
 
+    /**
+     * Version codes APKMirror lists for [versionName], builds for this
+     * device's ABIs first. Release pages aren't behind Cloudflare (only the
+     * variant download pages are), so Aurora uses this to fetch the same build
+     * from Play.
+     */
+    internal fun versionCodesFor(request: HelperRequest, versionName: String): List<Long> {
+        val appPageUrl = apkMirrorAppPage(request) ?: return emptyList()
+        val appDoc = fetchDocument(appPageUrl)
+        val releaseUrl = apkMirrorRequestedReleaseUrl(request, appPageUrl, appDoc, listOf(versionName))
+            ?: return emptyList()
+        val releaseDoc = fetchDocument(releaseUrl)
+        if (releaseDoc.isCloudflareChallenge()) return emptyList()
+        val abis = runCatching { request.availableAbis }.getOrDefault(emptyList())
+            .map { it.lowercase(Locale.US) }
+        return releaseDoc.select("div.table-row.headerFont")
+            .mapNotNull { row ->
+                val code = row.selectFirst("div.table-cell:nth-child(1) span.colorLightBlack")
+                    ?.text()
+                    ?.trim()
+                    ?.toLongOrNull()
+                    ?.takeIf { it > 0L }
+                    ?: return@mapNotNull null
+                val arch = row.select("div.table-cell").getOrNull(1)?.text()?.trim()
+                code to (abis.isEmpty() || apkMirrorArchMatches(arch, abis))
+            }
+            .sortedByDescending { (_, abiMatches) -> abiMatches }
+            .map { (code, _) -> code }
+            .distinct()
+    }
+
     private fun apkMirrorRequestedReleaseUrl(
         request: HelperRequest,
         appPageUrl: String,
-        appDoc: Document
+        appDoc: Document,
+        requestedVersions: List<String> = request.requestedVersionNames
     ): String? {
-        val requestedVersions = request.requestedVersionNames
         if (requestedVersions.isEmpty()) return null
 
         request.sourceHintUrlsFor(DownloadSource.APK_MIRROR)
