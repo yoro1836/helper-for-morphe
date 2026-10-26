@@ -394,4 +394,53 @@ class ApkMirrorParserTest {
         assertTrue(compareVersionNames(null, "1.0.0") < 0)
         assertTrue(compareVersionNames("1.0.0", null) > 0)
     }
+
+    @Test
+    fun findCandidates_requested_guessesReleaseUrlBeforeWalkingUploads() = runBlocking {
+        val releaseUrl = "${appPageUrl}example-app-2-0-0-release/"
+        val downloadPageUrl = "${releaseUrl}download/"
+        val finalUrl = "https://www.apkmirror.com/download.php?id=123&key=abc"
+        val fetcher = FakeSourceTextFetcher(
+            apkMirrorPages(
+                mapOf(
+                    releaseUrl to
+                        """<html><body><a class="downloadButton" href="$downloadPageUrl">Download</a></body></html>""",
+                    downloadPageUrl to
+                        """<html><body><a id="download-link" href="$finalUrl"></a></body></html>"""
+                )
+            )
+        )
+        val parser = ApkMirrorParser(parserContext(fetcher))
+
+        val candidates = parser.findCandidates(
+            testRequest(packageName = packageName, versionName = "2.0.0"),
+            CandidateOption.REQUESTED
+        )
+
+        assertEquals(finalUrl, candidates.single().url)
+        assertTrue(fetcher.requestedUrls().none { it.contains("/uploads/") })
+        // Search, app page and release page are each fetched once.
+        assertEquals(1, fetcher.requestedUrls().count { it == appPageUrl })
+        assertEquals(1, fetcher.requestedUrls().count { it == releaseUrl })
+    }
+
+    @Test
+    fun findCandidates_latest_skipsUploadsWhenAppPageListsStableRelease() = runBlocking {
+        val fetcher = FakeSourceTextFetcher(
+            mapOf(
+                searchUrl to
+                    """<html><body><a href="/apk/example-org/example-app/">Example App</a></body></html>""",
+                appPageUrl to
+                    """<html><body><span id="$packageName">Example App</span>
+                       <a href="/apk/example-org/example-app/example-app-2-0-0-release/">2.0.0</a>
+                     </body></html>"""
+            )
+        )
+        val parser = ApkMirrorParser(parserContext(fetcher))
+
+        val candidates = parser.findCandidates(testRequest(packageName = packageName), CandidateOption.LATEST)
+
+        assertEquals("2.0.0", candidates.first().versionName)
+        assertTrue(fetcher.requestedUrls().none { it.contains("/uploads/") })
+    }
 }

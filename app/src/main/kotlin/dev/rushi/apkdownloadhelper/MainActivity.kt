@@ -72,6 +72,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -202,6 +203,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -851,7 +853,7 @@ class MainActivity : ComponentActivity() {
         source: DownloadSource,
         candidates: List<DownloadCandidate>
     ): List<DownloadCandidate> {
-        if (!request.hasRequestedVersionRequest || source == DownloadSource.AURORA || source == DownloadSource.PLAY) {
+        if (!request.hasRequestedVersionRequest || source == DownloadSource.PLAY) {
             return emptyList()
         }
 
@@ -6797,8 +6799,8 @@ private val DownloadSource.supportsRecommended: Boolean
         // Mi9 exposes a real version-history page that the in-app captcha
         // browser opens; its recommended candidate routes there. APK
         // Downloader stays manual-only (Cloudflare-gated with no version list).
+        // Aurora resolves the requested build's version code through Play.
         DownloadSource.APK_DOWNLOADER,
-        DownloadSource.AURORA,
         DownloadSource.PLAY -> false
         else -> true
     }
@@ -6808,11 +6810,10 @@ private val DownloadSource.supportsHistory: Boolean
     get() = when (this) {
         // Evozi has an old-versions page but no history list; APK Downloader
         // is Cloudflare-gated with no version list. Mi9's history tab offers a
-        // "browse the version history in the in-app browser" row. Aurora/Play
-        // never offer originals.
+        // "browse the version history in the in-app browser" row. Play never
+        // offers originals; Aurora lists known version codes plus a manual one.
         DownloadSource.EVOZI,
         DownloadSource.APK_DOWNLOADER,
-        DownloadSource.AURORA,
         DownloadSource.PLAY -> false
         else -> true
     }
@@ -6879,7 +6880,7 @@ private fun SourcePageContent(
             SourceSubTab.Latest -> {
                 when (group.source) {
                     DownloadSource.AURORA -> {
-                        InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
+                        InfoCard("Aurora downloads the current Play Store version here. Use History to pick an older build by version code.")
                     }
                     DownloadSource.PLAY -> {
                         InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
@@ -6899,6 +6900,9 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.History -> {
+                if (group.source == DownloadSource.AURORA) {
+                    AuroraVersionCodeCard(request = request, onDownloadVersion = onDownloadVersion)
+                }
                 VersionHistorySection(
                     state = group.history,
                     onDownloadVersion = onDownloadVersion,
@@ -7016,6 +7020,72 @@ private fun AboutModeCard(tab: SourceSubTab) {
                         horizontal = MorpheDefaults.ContentPadding,
                         vertical = MorpheDefaults.ContentPadding
                     )
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Play serves any build it still hosts by version code, so Aurora's history
+ * tab lets the user type one that isn't in the listed versions.
+ */
+@Composable
+private fun AuroraVersionCodeCard(
+    request: HelperRequest,
+    onDownloadVersion: (DownloadCandidate) -> Unit
+) {
+    var input by rememberSaveable(request.packageName) {
+        mutableStateOf(request.requestedVersionCodes.firstOrNull()?.toString().orEmpty())
+    }
+    val versionCode = input.trim().toLongOrNull()?.takeIf { it > 0L }
+    SurfaceCard(cornerRadius = MorpheDefaults.CompactCornerRadius) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MorpheDefaults.ContentPadding),
+            verticalArrangement = Arrangement.spacedBy(MorpheDefaults.ItemSpacing)
+        ) {
+            Text(text = "Download a build by version code", fontWeight = FontWeight.Bold)
+            Text(
+                text = "Google Play still serves many older builds. Version codes are listed on APKMirror, APKPure and similar sites.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(MorpheDefaults.ItemSpacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { value -> input = value.filter(Char::isDigit) },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    placeholder = { Text("Version code") }
+                )
+                HelperButton(
+                    text = "Download",
+                    onClick = {
+                        val code = versionCode ?: return@HelperButton
+                        onDownloadVersion(
+                            DownloadCandidate(
+                                source = DownloadSource.AURORA,
+                                name = request.appName,
+                                packageName = request.packageName,
+                                versionName = null,
+                                versionCode = code,
+                                url = playStoreUrl(request.packageName),
+                                fileKind = "web",
+                                option = CandidateOption.LATEST,
+                                directDownload = false,
+                                versionStatus = request.versionStatus(null, code),
+                                formatMatches = true
+                            )
+                        )
+                    },
+                    icon = Icons.Outlined.Download,
+                    modifier = Modifier.widthIn(min = 120.dp)
                 )
             }
         }

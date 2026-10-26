@@ -214,14 +214,23 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         val searchVersion = apkMirrorSearchVersionForApp(searchDoc, appPageUrl)
             ?: apkMirrorVersions(searchDoc.html()).firstOrNull()
         val appDoc = fetchDocument(appPageUrl)
-        val uploadsDoc = runCatching { fetchDocument(apkMirrorUploadsUrl(appPageUrl), referer = appPageUrl) }
-            .getOrNull()
-        val latestReleaseUrl = apkMirrorLatestReleaseUrl(
-            (
-                uploadsDoc?.let { apkMirrorReleaseLinks(it, appPageUrl) }.orEmpty() +
-                    apkMirrorReleaseLinks(appDoc, appPageUrl)
-                ).distinct()
-        )
+        val appLinks = apkMirrorReleaseLinks(appDoc, appPageUrl)
+        // The app page already lists the newest uploads; only pay for the
+        // uploads page (one more paced request) when it has no stable release.
+        val hasStableAppLink = appLinks.any {
+            !it.hasVariantBuildMarker() &&
+                !it.contains("alpha", ignoreCase = true) &&
+                !it.contains("beta", ignoreCase = true)
+        }
+        val uploadsLinks = if (hasStableAppLink) {
+            emptyList()
+        } else {
+            runCatching { fetchDocument(apkMirrorUploadsUrl(appPageUrl), referer = appPageUrl) }
+                .getOrNull()
+                ?.let { apkMirrorReleaseLinks(it, appPageUrl) }
+                .orEmpty()
+        }
+        val latestReleaseUrl = apkMirrorLatestReleaseUrl((uploadsLinks + appLinks).distinct())
         val latestVersion = latestReleaseUrl?.let { apkMirrorVersionFromReleaseUrl(it, appPageUrl) }
             ?: searchVersion
             ?: apkMirrorVersions(appDoc.html()).firstOrNull()
@@ -396,6 +405,21 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
 
         val category = appPageUrl.trimEnd('/').substringAfterLast('/').takeIf(String::isNotBlank)
             ?: return null
+
+        // Release pages follow "<app page>/<app slug>-<version slug>-release/",
+        // so one guessed fetch usually replaces up to five uploads pages.
+        for (version in requestedVersions) {
+            val guessUrl = "${appPageUrl.trimEnd('/')}/$category-${version.apkMirrorVersionSlug()}-release/"
+            val doc: Document = try {
+                fetchDocument(guessUrl, referer = appPageUrl)
+            } catch (e: HttpRateLimitedException) {
+                throw e
+            } catch (e: Exception) {
+                continue
+            }
+            if (!doc.isCloudflareChallenge() && doc.looksLikeApkMirrorReleasePage()) return guessUrl
+        }
+
         val uploadsUrl = "https://www.apkmirror.com/uploads/?appcategory=$category"
         for (page in 1..5) {
             val pageUrl = if (page == 1) {
@@ -626,7 +650,31 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         releaseDoc.select("div.table-row.headerFont")
             .mapNotNull(::apkMirrorVariantFromRow)
 
+    /**
+     * Each selected variant costs two paced requests (variant + download page),
+     * so drop variants built for ABIs this device can't run.
+     */
     private fun apkMirrorSelectableVariants(
+        request: HelperRequest,
+        variants: List<ApkMirrorVariant>
+    ): List<ApkMirrorVariant> {
+        val selected = apkMirrorFormatVariants(request, variants)
+        val abis = runCatching { request.availableAbis }.getOrDefault(emptyList())
+            .map { it.lowercase(Locale.US) }
+        if (abis.isEmpty()) return selected
+        return selected
+            .filter { variant -> apkMirrorArchMatches(variant.arch, abis) }
+            .ifEmpty { selected }
+    }
+
+    private fun apkMirrorArchMatches(arch: String?, abis: List<String>): Boolean {
+        if (arch.isNullOrBlank() || arch.isUniversalArchLabel()) return true
+        return arch.lowercase(Locale.US)
+            .split(Regex("[^a-z0-9_-]+"))
+            .any { it in abis }
+    }
+
+    private fun apkMirrorFormatVariants(
         request: HelperRequest,
         variants: List<ApkMirrorVariant>
     ): List<ApkMirrorVariant> {
@@ -800,6 +848,10 @@ private fun apkMirrorReleaseUrlMatchesVersion(url: String, version: String): Boo
         title().contains("Just a moment", ignoreCase = true) ||
             text().contains("Enable JavaScript and cookies to continue", ignoreCase = true)
 
+    private fun Document.looksLikeApkMirrorReleasePage(): Boolean =
+        select("div.table-row.headerFont").isNotEmpty() ||
+            select("a.downloadButton[href]").isNotEmpty()
+
     private fun Document.isApkMirrorNoResults(): Boolean =
         select("p").any { it.text().contains("No results found matching your query", ignoreCase = true) }
 
@@ -817,6 +869,35 @@ private fun apkMirrorReleaseUrlMatchesVersion(url: String, version: String): Boo
         return hasPackageId || hasPlayPackage || tablePackage
     }
 
-    private fun fetchDocument(url: String, referer: String? = null): Document =
-        ctx.document(url, referer)
+    private class CachedDocument(val doc: Document, val fetchedAtMillis: Long)
+
+    // Every APKMirror request is paced (~2.5s), and the Requested, Latest and
+    // History flows re-read the same search/app/release pages. Keep them for a
+    // few minutes so each page costs one request per session.
+    private val documentCache = object : LinkedHashMap<String, CachedDocument>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedDocument>?): Boolean =
+            size > DOCUMENT_CACHE_SIZE
+    }
+
+    private fun fetchDocument(url: String, referer: String? = null): Document {
+        // Download pages carry short-lived keys; always fetch them fresh.
+        val cacheable = "/download/" !in url && "download.php" !in url
+        if (cacheable) {
+            synchronized(documentCache) { documentCache[url] }
+                ?.takeIf { System.currentTimeMillis() - it.fetchedAtMillis < DOCUMENT_CACHE_TTL_MS }
+                ?.let { return it.doc }
+        }
+        val doc = ctx.document(url, referer)
+        if (cacheable && !doc.isCloudflareChallenge()) {
+            synchronized(documentCache) {
+                documentCache[url] = CachedDocument(doc, System.currentTimeMillis())
+            }
+        }
+        return doc
+    }
+
+    private companion object {
+        const val DOCUMENT_CACHE_SIZE = 48
+        const val DOCUMENT_CACHE_TTL_MS = 10 * 60 * 1000L
+    }
 }
