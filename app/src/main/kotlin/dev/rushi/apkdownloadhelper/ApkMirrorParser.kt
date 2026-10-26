@@ -43,8 +43,7 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
     }
 
     private suspend fun resolveHistoryUncached(request: HelperRequest): List<DownloadCandidate> {
-        val searchDoc = fetchDocument(apkMirrorPackageSearchUrl(request.packageName))
-        val appPageUrl = resolveApkMirrorAppPage(searchDoc, request) ?: return emptyList()
+        val appPageUrl = apkMirrorAppPage(request) ?: return emptyList()
         val category = appPageUrl.trimEnd('/').substringAfterLast('/').takeIf(String::isNotBlank)
             ?: return emptyList()
 
@@ -174,11 +173,7 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
     private fun findApkMirrorRequested(request: HelperRequest): List<DownloadCandidate> {
         if (!request.hasKnownVersionRequest) return emptyList()
 
-        val searchDoc = fetchDocument(apkMirrorPackageSearchUrl(request.packageName))
-        val appPageUrl = resolveApkMirrorAppPage(
-            searchDoc = searchDoc,
-            request = request
-        ) ?: throw SourceAppNotFoundException(request.packageName)
+        val appPageUrl = apkMirrorAppPage(request) ?: throw SourceAppNotFoundException(request.packageName)
         val appDoc = fetchDocument(appPageUrl)
         val requested = apkMirrorRequestedReleaseUrl(
             request = request,
@@ -206,13 +201,7 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         request: HelperRequest,
         searchUrl: String
     ): ApkMirrorLatestInfo? {
-        val searchDoc = fetchDocument(searchUrl)
-        val appPageUrl = resolveApkMirrorAppPage(
-            searchDoc = searchDoc,
-            request = request
-        ) ?: throw SourceAppNotFoundException(request.packageName)
-        val searchVersion = apkMirrorSearchVersionForApp(searchDoc, appPageUrl)
-            ?: apkMirrorVersions(searchDoc.html()).firstOrNull()
+        val appPageUrl = apkMirrorAppPage(request) ?: throw SourceAppNotFoundException(request.packageName)
         val appDoc = fetchDocument(appPageUrl)
         val appLinks = apkMirrorReleaseLinks(appDoc, appPageUrl)
         // The app page already lists the newest uploads; only pay for the
@@ -232,13 +221,42 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         }
         val latestReleaseUrl = apkMirrorLatestReleaseUrl((uploadsLinks + appLinks).distinct())
         val latestVersion = latestReleaseUrl?.let { apkMirrorVersionFromReleaseUrl(it, appPageUrl) }
-            ?: searchVersion
+            ?: runCatching { fetchDocument(searchUrl) }.getOrNull()?.let { searchDoc ->
+                apkMirrorSearchVersionForApp(searchDoc, appPageUrl)
+                    ?: apkMirrorVersions(searchDoc.html()).firstOrNull()
+            }
             ?: apkMirrorVersions(appDoc.html()).firstOrNull()
 
         return ApkMirrorLatestInfo(
             versionName = latestVersion,
             openUrl = latestReleaseUrl ?: appPageUrl
         )
+    }
+
+    private val appPagePrefs by lazy {
+        ctx.appContext?.getSharedPreferences(APP_PAGE_PREFS, android.content.Context.MODE_PRIVATE)
+    }
+
+    /**
+     * The app's APKMirror listing. Remembered per package across sessions, so a
+     * repeat request skips the search page and candidate-listing probes.
+     */
+    private fun apkMirrorAppPage(request: HelperRequest): String? {
+        val prefs = appPagePrefs
+        prefs?.getString(request.packageName, null)?.let { remembered ->
+            val doc = try {
+                fetchDocument(remembered)
+            } catch (e: HttpRateLimitedException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (doc != null && doc.apkMirrorMatchesPackage(request.packageName)) return remembered
+            prefs.edit().remove(request.packageName).apply()
+        }
+        val searchDoc = fetchDocument(apkMirrorPackageSearchUrl(request.packageName))
+        return resolveApkMirrorAppPage(searchDoc, request)
+            ?.also { prefs?.edit()?.putString(request.packageName, it)?.apply() }
     }
 
     private fun resolveApkMirrorAppPage(searchDoc: Document, request: HelperRequest): String? {
@@ -897,6 +915,7 @@ private fun apkMirrorReleaseUrlMatchesVersion(url: String, version: String): Boo
     }
 
     private companion object {
+        const val APP_PAGE_PREFS = "apkmirror_app_pages"
         const val DOCUMENT_CACHE_SIZE = 48
         const val DOCUMENT_CACHE_TTL_MS = 10 * 60 * 1000L
     }
