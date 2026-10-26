@@ -286,13 +286,13 @@ class MainActivity : ComponentActivity() {
         const val APKMIRROR_REQUEST_GAP_MS = 2500L
     }
 
-    private val browserUserAgent =
-        "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36"
+    // Lazy: the context isn't attached yet while fields initialise.
+    private val browserUserAgent by lazy { webViewUserAgent() }
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
         .dns(AdGuardDns)
+        .cookieJar(WebViewCookieJar)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
@@ -9682,7 +9682,7 @@ internal fun sourceFailureMessage(sourceLabel: String, error: Throwable, action:
 
     return when {
         httpCode == "403" -> {
-            "$sourceLabel blocked automated access (HTTP 403), likely due to bot protection. Open the link and download manually."
+            "$sourceLabel blocked automated access (HTTP 403), likely due to bot protection. Solve the check once with Solve captcha in app, then try again, or open the link and download manually."
         }
         httpCode == "429" -> {
             "$sourceLabel rate-limited the helper (HTTP 429). Try again later or use Manual mode."

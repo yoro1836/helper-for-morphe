@@ -45,14 +45,15 @@ internal const val PARALLEL_SEGMENTS = 4
  * through [onRetry].
  */
 internal class ApkDownloader(
-    client: OkHttpClient,
-    apkPureClient: OkHttpClient,
+    private val client: OkHttpClient,
+    private val apkPureClient: OkHttpClient,
     private val onRetry: (attempt: Int, delayMs: Long) -> Unit = { _, _ -> }
 ) {
-    // HTTP/1.1 so parallel ranges get their own TCP connections instead of
-    // sharing one HTTP/2 connection.
-    private val client = client.newBuilder().protocols(listOf(Protocol.HTTP_1_1)).build()
-    private val apkPureClient = apkPureClient.newBuilder().protocols(listOf(Protocol.HTTP_1_1)).build()
+    // Extra range segments use HTTP/1.1 so they get their own TCP connections
+    // instead of sharing one HTTP/2 connection. The first request keeps the
+    // normal client so bot checks see the same client as before.
+    private val rangeClient = client.newBuilder().protocols(listOf(Protocol.HTTP_1_1)).build()
+    private val apkPureRangeClient = apkPureClient.newBuilder().protocols(listOf(Protocol.HTTP_1_1)).build()
 
     private val activeCalls: MutableSet<Call> = ConcurrentHashMap.newKeySet()
 
@@ -125,7 +126,7 @@ internal class ApkDownloader(
                     // Ranges go to the post-redirect URL so a one-shot source
                     // link (e.g. APKMirror's download.php) is only hit once.
                     downloadParallel(
-                        client = downloadClient,
+                        client = if (downloadClient === apkPureClient) apkPureRangeClient else rangeClient,
                         url = response.request.url.toString(),
                         referer = download.referer,
                         cookieHeader = download.cookieHeader,

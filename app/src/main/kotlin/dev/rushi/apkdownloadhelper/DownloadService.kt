@@ -257,14 +257,14 @@ internal class DownloadService : Service() {
     private var currentSpeedBytesPerSec = 0.0
     private var speedSamples = 0
 
-    private val browserUserAgent =
-        "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36"
+    // Lazy: the context isn't attached yet while fields initialise.
+    private val browserUserAgent by lazy { webViewUserAgent() }
 
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
         .dns(AdGuardDns)
+        .cookieJar(WebViewCookieJar)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
