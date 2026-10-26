@@ -60,6 +60,17 @@ android {
         }
     }
 
+    // Fixed debug key so CI debug APKs install over each other.
+    val ciDebugKeystore = rootProject.file(".github/debug.keystore")
+    if (ciDebugKeystore.isFile) {
+        signingConfigs.getByName("debug") {
+            storeFile = ciDebugKeystore
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
